@@ -1,110 +1,178 @@
-import argparse, os, shutil, tempfile
+# -*- coding: utf-8 -*-
+"""
+Maya batch exporter: USD / FBX / Alembic
+- nazwy wyjściowe na bazie nazwy pliku wejściowego
+- fix dla USD na udziałach sieciowych:
+  * ustawia USD_LAYER_TMP_DIR na lokalny TMP
+  * próbuje 'fileSafetyMode=none'
+  * ma fallback: eksport do %TEMP% i kopiowanie na docelowy folder
+"""
+
+import argparse
+import os
+import shutil
+import tempfile
+import time
+import getpass
+
 import maya.standalone
 import maya.cmds as cmds
 import maya.mel as mel
 
-def ensure_writable_dir(dirpath):
-    dirpath = os.path.normpath(dirpath)
-    os.makedirs(dirpath, exist_ok=True)
-    testfile = os.path.join(dirpath, "_writetest.tmp")
+# ---------- helpers ----------
+
+def norm(p):
+    return os.path.normpath(p) if p else p
+
+def ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
+    return path
+
+def can_write(dirpath):
+    """Zwraca (True, None) jeśli zapis możliwy, inaczej (False, Exception)."""
+    dirpath = ensure_dir(dirpath)
+    test = os.path.join(dirpath, "_writetest.tmp")
     try:
-        with open(testfile, "wb") as f:
-            f.write(b"ok")
-        os.remove(testfile)
+        with open(test, "wb") as f:
+            f.write(b"x")
+        os.remove(test)
         return True, None
     except Exception as e:
         return False, e
 
-def safe_target_base(output_dir, base_name):
-    # jeśli katalog nie jest zapisywalny -> fallback: %TEMP%\maya_export\<user>\<base_name>
-    ok, err = ensure_writable_dir(output_dir)
-    if ok:
-        return os.path.join(output_dir, base_name), None, None
-    tmp_root = os.path.join(tempfile.gettempdir(), "maya_export", os.getlogin())
-    tmp_dir = os.path.join(tmp_root, base_name)
-    os.makedirs(tmp_dir, exist_ok=True)
-    return os.path.join(tmp_dir, base_name), output_dir, err  # (tmp_base, final_dir, original_error)
-
-def move_if_needed(tmp_base, final_dir):
-    if not final_dir:
-        return True, None
-    ok, err = ensure_writable_dir(final_dir)
-    if not ok:
-        return False, err
-    moved = []
-    for ext in (".usd", ".fbx", ".abc"):
-        src = tmp_base + ext
-        if os.path.exists(src):
-            dst = os.path.join(final_dir, os.path.basename(src))
-            try:
-                shutil.move(src, dst)
-                moved.append(dst)
-            except Exception as e:
+def copy_with_retry(src, dst, retries=5, delay=0.5):
+    ensure_dir(os.path.dirname(dst))
+    for i in range(retries):
+        try:
+            shutil.copy2(src, dst)
+            return True, None
+        except Exception as e:
+            if i == retries - 1:
                 return False, e
-    return True, None
+            time.sleep(delay * (i + 1))
 
-def export_usd(output_base):
-    try:
-        cmds.loadPlugin("mayaUsdPlugin", quiet=True)
-        cmds.select(all=True)
-        usd_file = output_base + ".usd"
-        cmds.file(usd_file, force=True, options="ExportUVs=1;ExportColorSets=1", typ="USD Export", pr=True, es=True)
-        print(f"✅ USD exported to: {usd_file}")
-    except Exception as e:
-        print(f"❌ USD export failed: {e}")
+def move_with_retry(src, dst, retries=5, delay=0.5):
+    ensure_dir(os.path.dirname(dst))
+    for i in range(retries):
+        try:
+            shutil.move(src, dst)
+            return True, None
+        except Exception as e:
+            if i == retries - 1:
+                return False, e
+            time.sleep(delay * (i + 1))
 
-def export_fbx(output_base):
-    try:
-        cmds.loadPlugin("fbxmaya", quiet=True)
+def top_level_transforms():
+    # Pomijamy standardowe systemowe: |persp|top|front|side jeśli istnieją
+    sys_cams = set(cmds.listCameras() or [])
+    assemblies = cmds.ls(assemblies=True, long=True) or []
+    return [a for a in assemblies if os.path.basename(a) not in sys_cams]
+
+def load_plugins():
+    for plug in ("mayaUsdPlugin", "fbxmaya", "AbcExport"):
+        try:
+            if not cmds.pluginInfo(plug, q=True, loaded=True):
+                cmds.loadPlugin(plug, quiet=True)
+        except Exception:
+            # FBX/Alembic/USD są opcjonalnie instalowane; brak = pomijamy
+            pass
+
+# ---------- exporters ----------
+
+def export_usd(final_base_noext):
+    """
+    Próbuje bezpośredni zapis USD do finalnej ścieżki z:
+      - USD_LAYER_TMP_DIR = TMP
+      - fileSafetyMode=none
+    Jeśli się nie uda, robi staging do %TEMP% i kopiuje na docelowy folder.
+    """
+    usd_final = final_base_noext + ".usd"
+    ensure_dir(os.path.dirname(usd_final))
+
+    # 1) ustaw TMP dla USD (staging tymczasowy poza udziałem sieciowym)
+    os.environ["USD_LAYER_TMP_DIR"] = tempfile.gettempdir()
+
+    # 2) Select all (USD exporter honoruje selection)
+    if not cmds.ls(sl=True):
         cmds.select(all=True)
-        fbx_file = output_base + ".fbx"
+
+    options = "ExportUVs=1;ExportColorSets=1;fileSafetyMode=none;"
+    try:
+        cmds.file(usd_final, force=True, options=options, typ="USD Export", pr=True, es=True)
+        print(f"✅ USD exported to: {usd_final}")
+        return
+    except Exception as e_direct:
+        print(f"⚠️ USD direct export failed: {e_direct}")
+
+    # 3) fallback: eksport do %TEMP%, potem kopiowanie na docelowy folder
+    tmp_dir = ensure_dir(os.path.join(tempfile.gettempdir(), "usd_staging", getpass.getuser()))
+    tmp_usd = os.path.join(tmp_dir, os.path.basename(usd_final))
+    try:
+        cmds.file(tmp_usd, force=True, options=options, typ="USD Export", pr=True, es=True)
+        ok, err = copy_with_retry(tmp_usd, usd_final)
+        if ok:
+            print(f"✅ USD staged to TEMP and copied to: {usd_final}")
+        else:
+            print(f"❌ USD copy failed: {err}")
+    except Exception as e_stage:
+        print(f"❌ USD staging export failed: {e_stage}")
+
+def export_fbx(final_base_noext):
+    fbx_file = final_base_noext + ".fbx"
+    ensure_dir(os.path.dirname(fbx_file))
+    try:
+        if not cmds.ls(sl=True):
+            cmds.select(all=True)
+        # Możesz ustawić własne opcje FBX; zostawiamy puste dla szerokiej kompatybilności
         cmds.file(fbx_file, force=True, options="", typ="FBX export", pr=True, es=True)
         print(f"✅ FBX exported to: {fbx_file}")
     except Exception as e:
         print(f"❌ FBX export failed: {e}")
 
-def export_abc(output_base):
+def export_abc(final_base_noext, frame_start=1, frame_end=1):
+    abc_file = final_base_noext + ".abc"
+    ensure_dir(os.path.dirname(abc_file))
     try:
-        cmds.loadPlugin("AbcExport", quiet=True)
-        abc_file = output_base + ".abc"
-        top_nodes = cmds.ls(assemblies=True, long=True)
-        if not top_nodes:
-            raise RuntimeError("No valid root nodes found for Alembic export.")
-        roots = " ".join([f"-root {n}" for n in top_nodes])
-        mel.eval(f'AbcExport -j "-frameRange 1 1 {roots} -file \\"{abc_file}\\""')
+        roots = top_level_transforms()
+        if not roots:
+            raise RuntimeError("No top-level transforms found for Alembic export.")
+        roots_args = " ".join([f"-root {r}" for r in roots])
+        mel.eval(
+            'AbcExport -j "-frameRange {fs} {fe} {roots} -uvWrite -writeColorSets -file \\"{out}\\""' \
+            .format(fs=frame_start, fe=frame_end, roots=roots_args, out=abc_file)
+        )
         print(f"✅ Alembic exported to: {abc_file}")
     except Exception as e:
         print(f"❌ Alembic export failed: {e}")
 
+# ---------- main ----------
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--inputFile", required=True)
-    parser.add_argument("--outputBasePath", required=True)
+    parser.add_argument("--inputFile", required=True, help="Ścieżka do pliku .ma/.mb")
+    parser.add_argument("--outputBasePath", required=True, help="Folder wyjściowy")
+    # opcjonalnie możesz odkomentować dodatkowe parametry:
+    # parser.add_argument("--frameStart", type=int, default=1)
+    # parser.add_argument("--frameEnd", type=int, default=1)
     args = parser.parse_args()
 
-    input_file = os.path.normpath(args.inputFile)
-    out_dir = os.path.normpath(args.outputBasePath)
+    input_file = norm(args.inputFile)
+    out_dir = norm(args.outputBasePath)
+    ensure_dir(out_dir)
 
     base_name = os.path.splitext(os.path.basename(input_file))[0]
+    final_base = norm(os.path.join(out_dir, base_name))
 
     maya.standalone.initialize(name='python')
     try:
+        load_plugins()
         cmds.file(input_file.replace("\\", "/"), open=True, force=True)
 
-        # wybór docelowej bazy + fallback do %TEMP% jeśli P:\ niepisalny
-        tmp_base, final_dir, perm_err = safe_target_base(out_dir, base_name)
-        if perm_err:
-            print(f"⚠️  Output dir not writable ({out_dir}): {perm_err}. Using TEMP: {os.path.dirname(tmp_base)}")
+        # Exporty
+        export_usd(final_base)
+        export_fbx(final_base)
+        export_abc(final_base)  # , frame_start=args.frameStart, frame_end=args.frameEnd
 
-        export_usd(tmp_base)
-        export_fbx(tmp_base)
-        export_abc(tmp_base)
-
-        ok, mv_err = move_if_needed(tmp_base, final_dir)
-        if not ok:
-            print(f"❌ Could not move files from TEMP to final dir '{final_dir}': {mv_err}")
-        elif final_dir:
-            print(f"✅ Moved exports to final dir: {final_dir}")
     finally:
         maya.standalone.uninitialize()
 
