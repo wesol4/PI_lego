@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 .DS_Store
 *.log
+ma/setofdoom.ma
+# lokalny folder tylko do testowych eksportów
+tmp_export/
