@@ -1,53 +1,43 @@
-# Importer #2: Tworzenie punktów helperów
+# -*- coding: utf-8 -*-
+"""
+Eksport helperów z Maya do JSON (tylko grupa/i 'connectivity').
+Zapisuje listę obiektów:
+  {
+    "path": "/pelna/sciezka/dag/",
+    "matrix": [[...],[...],[...],[...]]  # world 4x4, row-major
+  }
 
-import hou
-import json
+Użycie (PowerShell):
+  "C:\Program Files\Autodesk\Maya2025\bin\mayapy.exe" maya_export_helpers.py ^
+    --inputFile "C:\path\setofdoom.ma" ^
+    --outputBasePath "C:\path\out"
+"""
+
+import argparse
 import os
+import json
 
-node = hou.pwd()
-geo = node.geometry()
-geo.clear()
+import maya.standalone
+import maya.cmds as cmds
 
-# Używamy nazwy 'path_json'
-param = node.parm('path_json')
-if not param:
-    raise hou.Error("Brak parametru 'path_json'. Dodaj go w 'Edit Parameter Interface...'")
-json_path = param.eval()
+# -------- utils --------
 
-if not os.path.exists(json_path):
-    raise hou.Error(f"Plik JSON nie został znaleziony: {json_path}")
+def _norm(p):
+    return os.path.normpath(p) if p else p
 
-with open(json_path, 'r', encoding='utf-8') as f:
-    helpers_data = json.load(f)
+def _ensure_dir(p):
+    os.makedirs(p, exist_ok=True)
+    return p
 
-if not isinstance(helpers_data, list):
-    raise hou.Error("Format pliku _helpers.json jest nieprawidłowy - oczekiwano listy.")
+def _dag_to_unix_path(dag_full):
+    # Maya: |root|A|B -> /root/A/B/
+    parts = [p for p in dag_full.split('|') if p]
+    return "/" + "/".join(parts) + "/"
 
-# Tworzenie atrybutów
-geo.addAttrib(hou.attribType.Point, "path", "") # Ścieżka do SHAPE rodzica
-geo.addAttrib(hou.attribType.Point, "type", "")
-geo.addAttrib(hou.attribType.Point, "hasMesh", 0)
-identity_matrix = (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
-geo.addAttrib(hou.attribType.Point, "transform", identity_matrix)
+def _world_matrix(node):
+    # 16 wartości row-major -> 4x4
+    m = cmds.xform(node, q=True, m=True, ws=True)
+    return [m[0:4], m[4:8], m[8:12], m[12:16]]
 
-print(f"--- Tworzenie {len(helpers_data)} punktów helperów ---")
-
-for helper in helpers_data:
-    new_point = geo.createPoint()
-
-    # Przypisz atrybuty
-    new_point.setAttribValue("path", helper.get("path", ""))
-    new_point.setAttribValue("type", helper.get("type", ""))
-    new_point.setAttribValue("hasMesh", 1 if helper.get("hasMesh", False) else 0)
-
-    matrix_list_of_lists = helper.get("transform")
-    if matrix_list_of_lists:
-        try:
-            flat_matrix_list = [item for sublist in matrix_list_of_lists for item in sublist]
-            transform_matrix = hou.Matrix4(flat_matrix_list)
-            new_point.setPosition(transform_matrix.extractTranslates())
-            new_point.setAttribValue("transform", transform_matrix)
-        except Exception as e:
-            print(f"Ostrzeżenie: Błąd macierzy dla helpera typu '{helper.get('type', 'N/A')}': {e}")
-
-print("--- Zakończono tworzenie helperów. ---")
+def _find_connectivity_roots():
+    # Szukaj
