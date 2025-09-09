@@ -4,12 +4,13 @@ Alembic-only exporter for mayapy (Maya 2025)
 - output: <sceneName>.abc in --outputBasePath
 - direct write to UNC (no TEMP staging/copy)
 
-
-& "C:\Program Files\Autodesk\Maya2025\bin\mayapy.exe" `
->>   "C:\Users\wesol\git\PI_lego\maya_export_geo.py" `
->>   --inputFile "C:\Users\wesol\git\PI_lego\ma\setofdoom.ma" `
->>   --outputBasePath "C:\Users\wesol\git\PI_lego\tmp_export\"
 """
+# & "C:\Program Files\Autodesk\Maya2025\bin\mayapy.exe" `
+# >>   "C:\Users\wesol\git\PI_lego\maya_export_geo.py" `
+# >>   --inputFile "C:\Users\wesol\git\PI_lego\ma\setofdoom.ma" `
+# >>   --outputBasePath "C:\Users\wesol\git\PI_lego\tmp_export\"
+
+
 
 
 import argparse, os, sys
