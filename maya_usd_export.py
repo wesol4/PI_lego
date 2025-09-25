@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
-# USD exporter for mayapy (Maya 2025). Eksport do katalogu tymczasowego, potem kopiowanie do celu.
-# Brak docstringów, brak backslashy w komentarzach (unikamy \u w źródle).
+# USD exporter for mayapy (Maya 2025)
+# Eksport: staging do %TEMP%, potem kopiowanie do celu.
+# Bez uninitialize (os._exit) → brak crasha na zamknięciu.
+
 import argparse, os, shutil, tempfile, time, getpass, sys, io
 
-# Stabilizacja środowiska przed importem Mayi
+# --- stabilizacja środowiska przed importem Mayi
 os.environ.setdefault("MAYA_DISABLE_CLEANUP", "1")
 os.environ.setdefault("MAYA_UNLOAD_PLUGINS", "0")
 os.environ.setdefault("MAYA_NO_WARNING_FOR_MISSING_DEFAULT_RENDERER", "1")
 
-# stdout/stderr w UTF-8
+# stdout/stderr w UTF-8 (żeby nie sypało na znaki specjalne)
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
@@ -34,7 +36,7 @@ def copy_with_retry(src: str, dst: str, retries: int = 8, delay: float = 0.5):
             shutil.copy2(src, tmp_dst)
             if os.path.exists(dst):
                 os.remove(dst)
-            os.replace(tmp_dst, dst)
+            os.replace(tmp_dst, dst)  # atomiczny move
             return True, None
         except Exception as e:
             last_err = e
@@ -69,6 +71,7 @@ def export_usd_to_temp(scene_usd_name: str) -> str:
         "ExportVisibility=1;"
         "WorldSpace=1;"
         "DynamicAttributes=1;"
+        "CurveDefaultWidth=1.0;"
     )
 
     cmds.file(norm_path(tmp_usd),
@@ -113,6 +116,7 @@ def main():
         status = 1
         sys.stdout.flush(); sys.stderr.flush()
     finally:
+        # brak maya.standalone.uninitialize() → zamiast tego twarde wyjście
         os._exit(status)
 
 
