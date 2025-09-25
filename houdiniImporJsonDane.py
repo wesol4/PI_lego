@@ -3,22 +3,16 @@ import hou, os, json
 node = hou.pwd()
 geo  = node.geometry()
 
-# --- Helpers ---
-
 def _norm(p):
-    """Normalizacja ścieżek Houdini/Maya."""
     if not p: return ""
     p = p.replace("|", "/")
     while "//" in p: p = p.replace("//", "/")
     return p.rstrip("/")
 
 def _parse_matrix16(val):
-    """Próba parsowania wartości jako macierzy 4x4 (float[16])."""
     if isinstance(val, str):
-        try:
-            val = json.loads(val)
-        except Exception:
-            return None
+        try: val = json.loads(val)
+        except: return None
     if isinstance(val, (list, tuple)) and len(val) == 16 and all(isinstance(x,(int,float)) for x in val):
         return tuple(float(x) for x in val)
     if isinstance(val, (list, tuple)) and len(val) == 4 and all(isinstance(r,(list,tuple)) and len(r)==4 for r in val):
@@ -28,7 +22,6 @@ def _parse_matrix16(val):
     return None
 
 def _to_vec3(v):
-    """Konwersja do hou.Vector3, jeśli to lista [x,y,z]."""
     if isinstance(v,(list,tuple)) and len(v)==3 and all(isinstance(x,(int,float)) for x in v):
         return hou.Vector3([float(x) for x in v])
     if isinstance(v,str):
@@ -61,7 +54,6 @@ shapeA = geo.findPrimAttrib("shape_path")
 xformA = geo.findPrimAttrib("xform_path")
 
 def _rec_for(prim):
-    """Znajdź rekord JSON pasujący do prim na podstawie atrybutów ścieżki."""
     for a in (pathA,shapeA,xformA):
         if not a: continue
         try:
@@ -70,7 +62,7 @@ def _rec_for(prim):
         except: pass
     return None
 
-# --- 3) Reset i tworzenie atrybutów specjalnych ---
+# --- 3) Reset atrybutów specjalnych ---
 for name in ("LEGO_startPosition","worldMatrix"):
     if geo.findPrimAttrib(name):
         geo.removePrimAttrib(name)
@@ -91,17 +83,13 @@ if not geo.findPrimAttrib("bbox_max"):
 applied = 0
 for prim in geo.prims():
     rec = _rec_for(prim)
-    if not rec:
-        continue
-
-    print(f"\n➡️ Prim id={prim.number()} | path={rec.get('path','?')}")
+    if not rec: continue
 
     # worldMatrix
     wm16 = _parse_matrix16(rec.get("worldMatrix"))
     if wm16:
         prim.setAttribValue("worldMatrix", wm16)
         prim.setAttribValue("worldMatrix_translation", hou.Vector3((wm16[12]*0.01, wm16[13]*0.01, wm16[14]*0.01)))
-        print("  ✅ worldMatrix ustawiony")
 
     # LEGO_startPosition
     start_raw = None
@@ -117,35 +105,27 @@ for prim in geo.prims():
     if sm16:
         prim.setAttribValue("LEGO_startPosition", sm16)
         prim.setAttribValue("LEGO_startPosition_translation", hou.Vector3((sm16[12]*0.01, sm16[13]*0.01, sm16[14]*0.01)))
-        print("  ✅ LEGO_startPosition ustawiony")
 
     # bbox
     bbox = rec.get("bbox") or {}
     vmin = _to_vec3(bbox.get("min"))
     vmax = _to_vec3(bbox.get("max"))
-    if vmin:
-        prim.setAttribValue("bbox_min", vmin*0.01)
-        print(f"  ✅ bbox_min = {vmin*0.01}")
-    if vmax:
-        prim.setAttribValue("bbox_max", vmax*0.01)
-        print(f"  ✅ bbox_max = {vmax*0.01}")
+    if vmin: prim.setAttribValue("bbox_min", vmin*0.01)
+    if vmax: prim.setAttribValue("bbox_max", vmax*0.01)
 
-    # skalarne pola
+    # wybrane pola skalarne
     for k in ("vmeCommonPartType","instanced","vertices","faces"):
         if k in rec:
             val = rec[k]
             if isinstance(val, int):
                 if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0)
                 prim.setAttribValue(k,val)
-                print(f"  ✅ {k} = {val}")
             elif isinstance(val, float):
                 if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0.0)
                 prim.setAttribValue(k,val)
-                print(f"  ✅ {k} = {val}")
             elif isinstance(val, str):
                 if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,"")
                 prim.setAttribValue(k,val)
-                print(f"  ✅ {k} = \"{val}\"")
 
     # extraAttributes.*
     for sec in ("transform","shape"):
@@ -156,22 +136,18 @@ for prim in geo.prims():
             if isinstance(v,int):
                 if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0)
                 prim.setAttribValue(k,v)
-                print(f"  ✅ {k} = {v}")
             elif isinstance(v,float):
                 if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0.0)
                 prim.setAttribValue(k,v)
-                print(f"  ✅ {k} = {v}")
             elif isinstance(v,str):
                 if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,"")
                 prim.setAttribValue(k,v)
-                print(f"  ✅ {k} = \"{v}\"")
             else:
                 vec = _to_vec3(v)
                 if vec is not None:
                     if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,hou.Vector3((0,0,0)))
                     prim.setAttribValue(k,vec)
-                    print(f"  ✅ {k} = {vec}")
 
     applied += 1
 
-print(f"\n✅ Zastosowano metadane dla {applied} / {geo.intrinsicValue('primitivecount')} prymitywów")
+print(f"✅ Zastosowano metadane dla {applied} / {geo.intrinsicValue('primitivecount')} prymitywów")
