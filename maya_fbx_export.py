@@ -1,67 +1,100 @@
-# Importer #1: Metadane dla głównej geometrii
+# -*- coding: utf-8 -*-
+"""
+FBX exporter for mayapy (Maya 2025)
+- output: <sceneName>.fbx w --outputBasePath
+- staging do TEMP i kopiowanie na UNC (omija locki/permissions)
+"""
 
-import hou
-import json
-import os
+import argparse, os, shutil, tempfile, time, getpass, sys
+import maya.standalone
+import maya.cmds as cmds
 
-# Aktualny node i geometria
-node = hou.pwd()
-geo = node.geometry()
+def norm_path(p: str) -> str:
+    return os.path.normpath(p).replace("\\", "/") if p else p
 
-# Parametr z plikiem JSON
-json_path_param = node.parm('json_file')
-if not json_path_param:
-    raise hou.Error("Brak parametru 'json_file'. Dodaj go w 'Edit Parameter Interface...'")
+def ensure_dir(p):
+    os.makedirs(p, exist_ok=True)
+    return p
 
-json_path = json_path_param.eval()
-if not os.path.exists(json_path):
-    raise hou.Error(f"Plik JSON nie został znaleziony: {json_path}")
+def copy_with_retry(src, dst, retries=5, delay=0.5):
+    ensure_dir(os.path.dirname(dst))
+    for i in range(retries):
+        try:
+            shutil.copy2(src, dst)
+            return True, None
+        except Exception as e:
+            if i == retries - 1:
+                return False, e
+            time.sleep(delay * (i + 1))
 
-# Wczytaj dane JSON
-with open(json_path, 'r', encoding='utf-8') as f:
-    attr_data = json.load(f)
+def load_fbx_plugin():
+    try:
+        if not cmds.pluginInfo("fbxmaya", q=True, loaded=True):
+            cmds.loadPlugin("fbxmaya", quiet=True)
+            print("[OK] fbxmaya plugin loaded")
+    except Exception as e:
+        print(f"[ERROR] fbxmaya plugin load failed: {e}")
+        raise
 
-print("--- Skanowanie atrybutów z pliku JSON ---")
+def export_fbx(final_fbx_path: str):
+    ensure_dir(os.path.dirname(final_fbx_path))
+    if not cmds.ls(sl=True):
+        cmds.select(all=True)
 
-# Mapa: path -> prim
-path_map = {prim.attribValue("path"): prim for prim in geo.prims() if prim.attribValue("path")}
+    cmds.FBXResetExport()
+    cmds.FBXExportSmoothingGroups('-v', True)
+    cmds.FBXExportSmoothMesh('-v', True)
+    cmds.FBXExportShapes('-v', True)
+    cmds.FBXExportSkins('-v', True)
+    cmds.FBXExportCameras('-v', True)
+    cmds.FBXExportLights('-v', False)
+    cmds.FBXExportEmbeddedTextures('-v', False)
+    cmds.FBXExportInputConnections('-v', True)
+    cmds.FBXExportUseSceneName('-v', False)
 
-print("--- Przypisywanie atrybutów do geometrii ---")
+    try:
+        cmds.FBXExport('-f', final_fbx_path, '-s')
+        print(f"[OK] FBX exported directly to: {final_fbx_path}")
+        return True
+    except Exception as e_direct:
+        print(f"[WARN] Direct FBX export failed: {e_direct}")
 
-for path_key, attributes in attr_data.items():
-    prim = path_map.get(path_key)
-    if not prim:
-        continue
-
-    for attr_name, attr_val in attributes.items():
-        # Jeśli atrybut nie istnieje — utwórz go z odpowiednim typem domyślnym
-        if not geo.findPrimAttrib(attr_name):
-            if isinstance(attr_val, str):
-                geo.addAttrib(hou.attribType.Prim, attr_name, "")
-            elif isinstance(attr_val, (int, bool)):
-                geo.addAttrib(hou.attribType.Prim, attr_name, 0)
-            elif isinstance(attr_val, float):
-                geo.addAttrib(hou.attribType.Prim, attr_name, 0.0)
-            elif isinstance(attr_val, (list, tuple)):
-                # Obsłuż listy numeryczne jako float[] (np. vector)
-                if all(isinstance(v, (int, float)) for v in attr_val):
-                    default_val = [0.0] * len(attr_val)
-                    geo.addAttrib(hou.attribType.Prim, attr_name, default_val)
-                else:
-                    print(f"⚠️ Pominięto atrybut {attr_name} — lista zawiera nienumeryczne dane")
-                    continue
-            else:
-                print(f"⚠️ Nieobsługiwany typ dla atrybutu {attr_name}: {type(attr_val)}")
-                continue
-
-        # Spróbuj ustawić wartość
-        attrib = geo.findPrimAttrib(attr_name)
-        if attrib:
-            try:
-                prim.setAttribValue(attr_name, attr_val)
-            except hou.OperationFailed:
-                print(f"⚠️ Nie udało się ustawić {attr_name}={attr_val} (typ niezgodny)")
+    tmp_dir = ensure_dir(os.path.join(tempfile.gettempdir(), "fbx_staging", getpass.getuser()))
+    tmp_fbx = os.path.join(tmp_dir, os.path.basename(final_fbx_path))
+    try:
+        cmds.FBXExport('-f', tmp_fbx, '-s')
+        ok, err = copy_with_retry(tmp_fbx, final_fbx_path)
+        if ok:
+            print(f"[OK] FBX staged and copied to: {final_fbx_path}")
+            return True
         else:
-            print(f"⚠️ Nie znaleziono atrybutu {attr_name} po dodaniu")
+            print(f"[ERROR] FBX copy failed: {err}")
+    except Exception as e_stage:
+        print(f"[ERROR] Staging FBX export failed: {e_stage}")
+    return False
 
-print("--- Zakończono przypisywanie metadanych. ---")
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--inputFile", required=True)
+    ap.add_argument("--outputBasePath", required=True)
+    args = ap.parse_args()
+
+    input_file = norm_path(args.inputFile)
+    out_dir = norm_path(args.outputBasePath)
+    ensure_dir(out_dir)
+
+    base = os.path.splitext(os.path.basename(input_file))[0]
+    final_fbx = norm_path(os.path.join(out_dir, base + ".fbx"))
+
+    maya.standalone.initialize(name='python')
+    try:
+        load_fbx_plugin()
+        cmds.file(input_file, open=True, force=True)
+        ok = export_fbx(final_fbx)
+        sys.stdout.flush(); sys.stderr.flush()
+        return 0 if ok else 1
+    finally:
+        pass
+
+if __name__ == "__main__":
+    sys.exit(main())
