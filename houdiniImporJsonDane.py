@@ -1,66 +1,177 @@
-# Importer #1: Metadane dla głównej geometrii
-
-import hou
-import json
-import os
+import hou, os, json
 
 node = hou.pwd()
-geo = node.geometry()
+geo  = node.geometry()
 
-# Parametr z plikiem JSON
-json_path_param = node.parm('json_file')
-if not json_path_param:
-    raise hou.Error("Brak parametru 'json_file'. Dodaj go w 'Edit Parameter Interface...'")
+# --- Helpers ---
 
-json_path = json_path_param.eval()
+def _norm(p):
+    """Normalizacja ścieżek Houdini/Maya."""
+    if not p: return ""
+    p = p.replace("|", "/")
+    while "//" in p: p = p.replace("//", "/")
+    return p.rstrip("/")
+
+def _parse_matrix16(val):
+    """Próba parsowania wartości jako macierzy 4x4 (float[16])."""
+    if isinstance(val, str):
+        try:
+            val = json.loads(val)
+        except Exception:
+            return None
+    if isinstance(val, (list, tuple)) and len(val) == 16 and all(isinstance(x,(int,float)) for x in val):
+        return tuple(float(x) for x in val)
+    if isinstance(val, (list, tuple)) and len(val) == 4 and all(isinstance(r,(list,tuple)) and len(r)==4 for r in val):
+        flat = []
+        for r in val: flat.extend(float(x) for x in r)
+        return tuple(flat)
+    return None
+
+def _to_vec3(v):
+    """Konwersja do hou.Vector3, jeśli to lista [x,y,z]."""
+    if isinstance(v,(list,tuple)) and len(v)==3 and all(isinstance(x,(int,float)) for x in v):
+        return hou.Vector3([float(x) for x in v])
+    if isinstance(v,str):
+        try:
+            vv = json.loads(v)
+            if isinstance(vv,(list,tuple)) and len(vv)==3:
+                return hou.Vector3([float(x) for x in vv])
+        except: pass
+    return None
+
+# --- 1) Wczytaj JSON ---
+json_path = node.evalParm("json_file")
 if not os.path.exists(json_path):
-    raise hou.Error(f"Plik JSON nie został znaleziony: {json_path}")
+    raise hou.NodeError(f"Nie znaleziono pliku JSON: {json_path}")
 
-# Wczytaj dane JSON
-with open(json_path, 'r', encoding='utf-8') as f:
-    attr_data = json.load(f)
+with open(json_path, "r", encoding="utf-8") as f:
+    data = json.load(f)
 
-print("--- Skanowanie atrybutów z pliku JSON ---")
+records = data.get("meshes", [])
 
-# Mapowanie path -> prim
-path_map = {prim.attribValue("path"): prim for prim in geo.prims() if prim.attribValue("path")}
+# --- 2) Mapa po ścieżkach ---
+rec_map = {}
+for rec in records:
+    for k in ("path","transformPathUnix","shapePathUnix"):
+        p = _norm(rec.get(k,""))
+        if p: rec_map[p] = rec
 
-print(f"Znaleziono {len(path_map)} prymitywów z atrybutem 'path'.")
+pathA  = geo.findPrimAttrib("path")
+shapeA = geo.findPrimAttrib("shape_path")
+xformA = geo.findPrimAttrib("xform_path")
 
-print("--- Przypisywanie atrybutów do geometrii ---")
+def _rec_for(prim):
+    """Znajdź rekord JSON pasujący do prim na podstawie atrybutów ścieżki."""
+    for a in (pathA,shapeA,xformA):
+        if not a: continue
+        try:
+            p = _norm(prim.attribValue(a))
+            if p in rec_map: return rec_map[p]
+        except: pass
+    return None
 
-for path_key, attributes in attr_data.items():
-    prim = path_map.get(path_key)
-    if not prim:
-        print(f"⚠️ Brak prymitywu dla path={path_key}")
+# --- 3) Reset i tworzenie atrybutów specjalnych ---
+for name in ("LEGO_startPosition","worldMatrix"):
+    if geo.findPrimAttrib(name):
+        geo.removePrimAttrib(name)
+geo.addAttrib(hou.attribType.Prim, "LEGO_startPosition", tuple(0.0 for _ in range(16)))
+geo.addAttrib(hou.attribType.Prim, "worldMatrix",       tuple(0.0 for _ in range(16)))
+
+if not geo.findPrimAttrib("LEGO_startPosition_translation"):
+    geo.addAttrib(hou.attribType.Prim, "LEGO_startPosition_translation", hou.Vector3((0,0,0)))
+if not geo.findPrimAttrib("worldMatrix_translation"):
+    geo.addAttrib(hou.attribType.Prim, "worldMatrix_translation", hou.Vector3((0,0,0)))
+
+if not geo.findPrimAttrib("bbox_min"):
+    geo.addAttrib(hou.attribType.Prim, "bbox_min", hou.Vector3((0,0,0)))
+if not geo.findPrimAttrib("bbox_max"):
+    geo.addAttrib(hou.attribType.Prim, "bbox_max", hou.Vector3((0,0,0)))
+
+# --- 4) Główna pętla ---
+applied = 0
+for prim in geo.prims():
+    rec = _rec_for(prim)
+    if not rec:
         continue
 
-    print(f"\n➡️ Path: {path_key}")
-    for attr_name, attr_val in attributes.items():
-        # 1. Utwórz atrybut jeśli nie istnieje
-        if not geo.findPrimAttrib(attr_name):
-            if isinstance(attr_val, str):
-                geo.addAttrib(hou.attribType.Prim, attr_name, "")
-            elif isinstance(attr_val, (int, bool)):
-                geo.addAttrib(hou.attribType.Prim, attr_name, 0)
-            elif isinstance(attr_val, float):
-                geo.addAttrib(hou.attribType.Prim, attr_name, 0.0)
-            elif isinstance(attr_val, (list, tuple)):
-                if all(isinstance(v, (int, float)) for v in attr_val):
-                    geo.addAttrib(hou.attribType.Prim, attr_name, [0.0] * len(attr_val))
-                else:
-                    print(f"⚠️ Pominięto {attr_name} — lista zawiera nienumeryczne dane: {attr_val}")
-                    continue
-            else:
-                print(f"⚠️ Pominięto {attr_name} — nieobsługiwany typ: {type(attr_val)}")
+    print(f"\n➡️ Prim id={prim.number()} | path={rec.get('path','?')}")
+
+    # worldMatrix
+    wm16 = _parse_matrix16(rec.get("worldMatrix"))
+    if wm16:
+        prim.setAttribValue("worldMatrix", wm16)
+        prim.setAttribValue("worldMatrix_translation", hou.Vector3((wm16[12]*0.01, wm16[13]*0.01, wm16[14]*0.01)))
+        print("  ✅ worldMatrix ustawiony")
+
+    # LEGO_startPosition
+    start_raw = None
+    extra = rec.get("extraAttributes") or {}
+    for sec in ("transform","shape"):
+        if "LEGO_startPosition" in (extra.get(sec) or {}):
+            start_raw = extra[sec]["LEGO_startPosition"]
+            break
+    if start_raw is None and "LEGO_startPosition" in rec:
+        start_raw = rec["LEGO_startPosition"]
+
+    sm16 = _parse_matrix16(start_raw)
+    if sm16:
+        prim.setAttribValue("LEGO_startPosition", sm16)
+        prim.setAttribValue("LEGO_startPosition_translation", hou.Vector3((sm16[12]*0.01, sm16[13]*0.01, sm16[14]*0.01)))
+        print("  ✅ LEGO_startPosition ustawiony")
+
+    # bbox
+    bbox = rec.get("bbox") or {}
+    vmin = _to_vec3(bbox.get("min"))
+    vmax = _to_vec3(bbox.get("max"))
+    if vmin:
+        prim.setAttribValue("bbox_min", vmin*0.01)
+        print(f"  ✅ bbox_min = {vmin*0.01}")
+    if vmax:
+        prim.setAttribValue("bbox_max", vmax*0.01)
+        print(f"  ✅ bbox_max = {vmax*0.01}")
+
+    # skalarne pola
+    for k in ("vmeCommonPartType","instanced","vertices","faces"):
+        if k in rec:
+            val = rec[k]
+            if isinstance(val, int):
+                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0)
+                prim.setAttribValue(k,val)
+                print(f"  ✅ {k} = {val}")
+            elif isinstance(val, float):
+                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0.0)
+                prim.setAttribValue(k,val)
+                print(f"  ✅ {k} = {val}")
+            elif isinstance(val, str):
+                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,"")
+                prim.setAttribValue(k,val)
+                print(f"  ✅ {k} = \"{val}\"")
+
+    # extraAttributes.*
+    for sec in ("transform","shape"):
+        items = (extra.get(sec) or {}).items()
+        for k,v in items:
+            if k == "LEGO_startPosition":
                 continue
-            print(f"  ➕ Utworzono atrybut: {attr_name} (typ {type(attr_val).__name__})")
+            if isinstance(v,int):
+                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0)
+                prim.setAttribValue(k,v)
+                print(f"  ✅ {k} = {v}")
+            elif isinstance(v,float):
+                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0.0)
+                prim.setAttribValue(k,v)
+                print(f"  ✅ {k} = {v}")
+            elif isinstance(v,str):
+                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,"")
+                prim.setAttribValue(k,v)
+                print(f"  ✅ {k} = \"{v}\"")
+            else:
+                vec = _to_vec3(v)
+                if vec is not None:
+                    if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,hou.Vector3((0,0,0)))
+                    prim.setAttribValue(k,vec)
+                    print(f"  ✅ {k} = {vec}")
 
-        # 2. Ustaw wartość
-        try:
-            prim.setAttribValue(attr_name, attr_val)
-            print(f"  ✅ {attr_name} = {attr_val}")
-        except hou.OperationFailed as e:
-            print(f"  ❌ Nie udało się ustawić {attr_name}={attr_val} ({e})")
+    applied += 1
 
-print("\n--- Zakończono przypisywanie metadanych. ---")
+print(f"\n✅ Zastosowano metadane dla {applied} / {geo.intrinsicValue('primitivecount')} prymitywów")
