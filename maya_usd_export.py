@@ -85,6 +85,7 @@ def export_usd(final_usd_path: str):
         print(f"[FAIL] Staging USD export failed: {e_stage}")
 
     return False
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--inputFile", required=True, help="Ścieżka do .ma/.mb")
@@ -104,7 +105,7 @@ def main():
         cmds.file(input_file, open=True, force=True)
         ok = export_usd(final_usd)
         sys.stdout.flush(); sys.stderr.flush()
-        sys.exit(0 if ok else 1)
+        return 0 if ok else 1   # <── zamiast sys.exit
     finally:
         try:
             maya.standalone.uninitialize()
@@ -112,4 +113,5 @@ def main():
             pass
 
 if __name__ == "__main__":
-    main()
+    code = main()
+    sys.exit(code)   # <── dopiero tu, PO uninitialize
