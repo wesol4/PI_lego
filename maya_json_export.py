@@ -84,7 +84,7 @@ def main():
         scene_path = _norm(args.inputFile)
         out_dir = _ensure_dir(_norm(args.outputBasePath))
         scene_name = os.path.splitext(os.path.basename(scene_path))[0]
-        out_json = os.path.join(out_dir, f"{scene_name}_geometry.json")
+        out_json = os.path.join(out_dir, f"{scene_name}.json")
 
         cmds.file(scene_path.replace("\\", "/"), open=True, force=True)
 
