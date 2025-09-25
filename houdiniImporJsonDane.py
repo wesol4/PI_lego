@@ -25,13 +25,17 @@ print("--- Skanowanie atrybutów z pliku JSON ---")
 # Mapowanie path -> prim
 path_map = {prim.attribValue("path"): prim for prim in geo.prims() if prim.attribValue("path")}
 
+print(f"Znaleziono {len(path_map)} prymitywów z atrybutem 'path'.")
+
 print("--- Przypisywanie atrybutów do geometrii ---")
 
 for path_key, attributes in attr_data.items():
     prim = path_map.get(path_key)
     if not prim:
+        print(f"⚠️ Brak prymitywu dla path={path_key}")
         continue
 
+    print(f"\n➡️ Path: {path_key}")
     for attr_name, attr_val in attributes.items():
         # 1. Utwórz atrybut jeśli nie istnieje
         if not geo.findPrimAttrib(attr_name):
@@ -45,14 +49,18 @@ for path_key, attributes in attr_data.items():
                 if all(isinstance(v, (int, float)) for v in attr_val):
                     geo.addAttrib(hou.attribType.Prim, attr_name, [0.0] * len(attr_val))
                 else:
-                    raise hou.Error(f"Atrybut {attr_name} ma listę z nie-numerycznymi wartościami: {attr_val}")
+                    print(f"⚠️ Pominięto {attr_name} — lista zawiera nienumeryczne dane: {attr_val}")
+                    continue
             else:
-                raise hou.Error(f"Nieobsługiwany typ w JSON dla {attr_name}: {type(attr_val)}")
+                print(f"⚠️ Pominięto {attr_name} — nieobsługiwany typ: {type(attr_val)}")
+                continue
+            print(f"  ➕ Utworzono atrybut: {attr_name} (typ {type(attr_val).__name__})")
 
-        # 2. Spróbuj ustawić wartość
+        # 2. Ustaw wartość
         try:
             prim.setAttribValue(attr_name, attr_val)
+            print(f"  ✅ {attr_name} = {attr_val}")
         except hou.OperationFailed as e:
-            raise hou.Error(f"Błąd przy ustawianiu {attr_name}={attr_val}: {e}")
+            print(f"  ❌ Nie udało się ustawić {attr_name}={attr_val} ({e})")
 
-print("--- Zakończono przypisywanie metadanych. ---")
+print("\n--- Zakończono przypisywanie metadanych. ---")
