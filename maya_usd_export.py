@@ -1,67 +1,118 @@
 # -*- coding: utf-8 -*-
 """
-USD exporter for mayapy (Maya 2025)
-- output: <sceneName>.usd
+USD exporter for mayapy (Maya 2025) z mechanizmem stagingu
+- output: <sceneName>.usd w --outputBasePath
+- zapis do TEMP i kopiowanie na UNC, żeby uniknąć permission/lock errors
 """
 
-import argparse, os, sys
+import argparse, os, shutil, tempfile, time, getpass, sys, io
 import maya.standalone
 import maya.cmds as cmds
 
+# --- ustaw stdout/stderr na UTF-8 (żeby uniknąć problemów z kodowaniem)
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+
 def norm_path(p: str) -> str:
-    return os.path.normpath(p).replace("\\", "/") if p else p
+    return p.replace("\\", "/") if p else p
+
 
 def ensure_dir(p):
     os.makedirs(p, exist_ok=True)
     return p
 
-def check_writable(path: str) -> bool:
-    """Sprawdza czy katalog jest zapisywalny."""
-    test_file = os.path.join(path, "__test_write.tmp")
-    try:
-        with open(test_file, "w") as f:
-            f.write("test")
-        os.remove(test_file)
-        return True
-    except Exception as e:
-        print(f"[ERROR] Cannot write to directory '{path}': {e}")
-        return False
+
+def copy_with_retry(src, dst, retries=5, delay=0.5):
+    ensure_dir(os.path.dirname(dst))
+    for i in range(retries):
+        try:
+            shutil.copy2(src, dst)  # preserve timestamps
+            return True, None
+        except Exception as e:
+            if i == retries - 1:
+                return False, e
+            time.sleep(delay * (i + 1))
+
 
 def load_usd_plugin():
     try:
         if not cmds.pluginInfo("mayaUsdPlugin", q=True, loaded=True):
             cmds.loadPlugin("mayaUsdPlugin", quiet=True)
-            print("[OK] mayaUsdPlugin loaded")
+            print("[INFO] mayaUsdPlugin loaded")
     except Exception as e:
         print(f"[ERROR] mayaUsdPlugin load failed: {e}")
         raise
 
-def export_usd(final_path):
+
+def open_scene_safe(path: str):
+    """Otwiera scenę i ignoruje brakujące pluginy (np. V-Ray)."""
     try:
-        cmds.mayaUSDExport(
-            file=final_path,
-            mergeTransformAndShape=True,
-            shadingMode="none"
-        )
-        print(f"[OK] USD exported to: {final_path}")
-        return True
+        cmds.file(path, open=True, force=True, ignoreVersion=True, options="v=0;")
     except Exception as e:
-        print(f"[ERROR] USD export failed: {e}")
-        return False
+        print(f"[WARN] Errors while opening scene: {e}")
+
+
+def export_usd(final_usd_path: str):
+    ensure_dir(os.path.dirname(final_usd_path))
+
+    # wybierz całą scenę jeśli brak selekcji
+    if not cmds.ls(sl=True):
+        cmds.select(all=True)
+
+    options = (
+        "ExportUVs=1;"
+        "ExportColorSets=1;"
+        "ExportDisplayColor=1;"
+        "ExportVisibility=1;"
+        "WorldSpace=1;"
+        "DynamicAttributes=1;"
+    )
+
+    # 1) próba bezpośrednia
+    try:
+        cmds.file(final_usd_path,
+                  force=True,
+                  options=options,
+                  typ="USD Export",
+                  pr=True,
+                  es=True)
+        print(f"[OK] USD exported directly to: {final_usd_path}")
+        return True
+    except Exception as e_direct:
+        print(f"[WARN] Direct USD export failed: {e_direct}")
+
+    # 2) fallback: staging do TEMP i copy-back
+    tmp_dir = ensure_dir(os.path.join(tempfile.gettempdir(), "usd_staging", getpass.getuser()))
+    tmp_usd = os.path.join(tmp_dir, os.path.basename(final_usd_path))
+    try:
+        cmds.file(tmp_usd,
+                  force=True,
+                  options=options,
+                  typ="USD Export",
+                  pr=True,
+                  es=True)
+        ok, err = copy_with_retry(tmp_usd, final_usd_path)
+        if ok:
+            print(f"[OK] USD staged at TEMP and copied to: {final_usd_path}")
+            return True
+        else:
+            print(f"[ERROR] USD copy failed: {err}")
+    except Exception as e_stage:
+        print(f"[ERROR] Staging USD export failed: {e_stage}")
+
+    return False
+
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--inputFile", required=True)
-    ap.add_argument("--outputBasePath", required=True)
+    ap.add_argument("--inputFile", required=True, help="Ścieżka do .ma/.mb")
+    ap.add_argument("--outputBasePath", required=True, help="Folder docelowy (powstanie <scene>.usd)")
     args = ap.parse_args()
 
     input_file = norm_path(args.inputFile)
     out_dir = norm_path(args.outputBasePath)
     ensure_dir(out_dir)
-
-    # check write permissions
-    if not check_writable(out_dir):
-        return 1
 
     base = os.path.splitext(os.path.basename(input_file))[0]
     final_usd = norm_path(os.path.join(out_dir, base + ".usd"))
@@ -69,16 +120,16 @@ def main():
     maya.standalone.initialize(name='python')
     try:
         load_usd_plugin()
-        print(f"[INFO] Opening scene: {input_file}")
-        cmds.file(input_file, open=True, force=True)
+        open_scene_safe(input_file)
         ok = export_usd(final_usd)
         sys.stdout.flush(); sys.stderr.flush()
-        return 0 if ok else 1
+        sys.exit(0 if ok else 1)
     finally:
-        print("[INFO] Shutting down Maya standalone...")
-        maya.standalone.uninitialize()
+        try:
+            maya.standalone.uninitialize()
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
-    exit_code = main()
-    # sys.exit() nie używamy, żeby uniknąć crasha GIL
-    print(f"[INFO] Process finished with code {exit_code}")
+    main()
