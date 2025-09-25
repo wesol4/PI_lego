@@ -2,12 +2,15 @@
 import argparse
 import os
 import json
-import sys
 import maya.standalone
 import maya.cmds as cmds
 
-def _norm(p): return os.path.normpath(p)
-def _ensure_dir(p): os.makedirs(p, exist_ok=True); return p
+def _norm(p):
+    return os.path.normpath(p)
+
+def _ensure_dir(p):
+    os.makedirs(p, exist_ok=True)
+    return p
 
 def _dag_to_unix_path(dag):
     return "/" + "/".join(part for part in dag.split("|") if part) + "/"
@@ -58,18 +61,17 @@ def _collect_materials(shape):
         conn = cmds.listConnections(f"{s}.surfaceShader", d=False, s=True) or []
         for m in conn:
             mats.append(m)
-    return list(set(mats))
+    return sorted(list(set(mats)))  # sortujemy dla stabilności
 
 def _safe_print(msg):
     """
     Próbuje wydrukować tekst z emoji ✅.
-    Jeśli konsola nie obsługuje UTF-8 -> zamienia na [OK].
+    Jeśli konsola nie obsługuje UTF-8 → zamienia na [OK].
     """
     try:
         print(msg)
     except UnicodeEncodeError:
-        safe_msg = msg.replace("✅", "[OK]")
-        print(safe_msg)
+        print(msg.replace("✅", "[OK]"))
 
 def main():
     ap = argparse.ArgumentParser()
