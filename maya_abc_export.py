@@ -20,7 +20,13 @@ def ensure_dir(p):
     return p
 
 def log(msg):
-    print(f"[ABC] {msg}")
+    """Log bezpieczny dla PDG (bez crasha na polskich znakach)."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        print(f"[ABC] {msg}")
+    except Exception:
+        safe = msg.encode("ascii", errors="replace").decode()
+        print(f"[ABC] {safe}")
 
 # ---------- AbcExport helpers ----------
 
@@ -88,7 +94,7 @@ def get_top_level_roots_from_selection_or_scene():
     # brak selekcji → wszystkie assemblies (bez kamer)
     assemblies = cmds.ls(assemblies=True, long=True) or []
     cameras = set(cmds.listCameras() or [])
-    # kamery zwracają shape’y, więc zbierzmy ich parent transformy
+    # kamery zwracają shape'y, więc zbierzmy ich parent transformy
     cam_parents = set()
     for c in cameras:
         p = cmds.listRelatives(c, parent=True, fullPath=True) or []
@@ -153,20 +159,15 @@ def build_abc_job_args(roots, start_frame, end_frame, step):
     if "-eulerFilter" in supported:
         args += ["-eulerFilter"]
 
-    # jawnie Ogawa (i tak jest domyślnie, ale niech będzie czytelnie)
+    # jawnie Ogawa
     if "-dataFormat" in supported:
         args += ["-dataFormat", "Ogawa"]
-
-    # UWAGA: nie używamy -stripNamespaces (bywa mylące i różne między wersjami)
-    # UWAGA: nie dokładamy -writeNormals/-writeCreases (często niewspierane w 2025)
 
     # roots
     for r in roots:
         args += ["-root", r]
 
-    # log informacyjny
-    log("Flagi użyte w job stringu: " + " ".join([a for a in args if a.startswith("-")]))
-
+    log("Flagi uzyte w job stringu: " + " ".join([a for a in args if a.startswith("-")]))
     return args
 
 # ---------- export / validate ----------
@@ -188,7 +189,7 @@ def export_alembic(final_abc_path, start_frame, end_frame, step):
     total_meshes = 0
     for r in roots:
         total_meshes += len(list_non_intermediate_meshes_under(r))
-    log(f"Eksport: roots={len(roots)}, mesh'y (nie-pośrednie) ~{total_meshes}, zakres={start_frame}->{end_frame}, step={step}")
+    log(f"Eksport: roots={len(roots)}, mesh'y (nie-posrednie) ~{total_meshes}, zakres={start_frame}->{end_frame}, step={step}")
 
     try:
         cmds.AbcExport(j=" ".join(job_args))
@@ -204,65 +205,6 @@ def export_alembic(final_abc_path, start_frame, end_frame, step):
         return False
 
 def validate_alembic(abc_path):
-    """
-    Prostą walidację robimy w tej samej sesji:
-    - Nowa scena
-    - Import Alembic
-    - Zlicz mesh'e i transformy
-    """
     try:
         cmds.file(new=True, force=True)
-        cmds.AbcImport(abc_path.replace("\\", "/"), mode="import")
-        meshes = cmds.ls(type="mesh") or []
-        xforms = cmds.ls(type="transform") or []
-        log(f"VALIDATE: po imporcie w Mayi -> meshes={len(meshes)}, transforms={len(xforms)}")
-        return True
-    except Exception as e:
-        print(f"[ERROR] Walidacja nie powiodła się: {e}")
-        return False
-
-# ---------- main ----------
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--inputFile", required=True, help="Ścieżka do .ma/.mb")
-    ap.add_argument("--outputBasePath", required=True, help="Folder docelowy (powstanie <scene>.abc)")
-    ap.add_argument("--frameStart", type=float, default=None, help="Start frame (domyślnie bieżąca klatka)")
-    ap.add_argument("--frameEnd", type=float, default=None, help="End frame (domyślnie bieżąca klatka)")
-    ap.add_argument("--step", type=float, default=1.0, help="Krok próbkowania (domyślnie 1.0)")
-    ap.add_argument("--validate", action="store_true", help="Po eksporcie sprawdź plik przez import do Mayi")
-    args = ap.parse_args()
-
-    input_file = norm(args.inputFile)
-    out_dir = norm(args.outputBasePath)
-    ensure_dir(out_dir)
-
-    base = os.path.splitext(os.path.basename(input_file))[0]
-    final_abc = norm(os.path.join(out_dir, base + ".abc"))
-
-    maya.standalone.initialize(name='python')
-    try:
-        load_alembic_plugin()
-        # otwarcie sceny
-        cmds.file(input_file.replace("\\", "/"), open=True, force=True)
-
-        # domyślna klatka = bieżący czas sceny
-        current = cmds.currentTime(q=True)
-        start = args.frameStart if args.frameStart is not None else current
-        end   = args.frameEnd   if args.frameEnd   is not None else current
-
-        ok = export_alembic(final_abc, start, end, args.step)
-
-        if ok and args.validate:
-            validate_alembic(final_abc)
-
-        sys.stdout.flush(); sys.stderr.flush()
-        sys.exit(0 if ok else 1)
-    finally:
-        try:
-            maya.standalone.uninitialize()
-        except Exception:
-            pass
-
-if __name__ == "__main__":
-    main()
+        cmds.AbcImport(abc_path.replace("\\", "/"),_
