@@ -2,7 +2,7 @@
 """
 FBX exporter for mayapy (Maya 2025)
 - output: <sceneName>.fbx w --outputBasePath
-- staging do TEMP i kopiowanie na UNC (omija locki/permissions)
+- staging do TEMP (lub własny katalog) i kopiowanie na UNC (omija locki/permissions)
 """
 
 import argparse, os, shutil, tempfile, time, getpass, sys
@@ -36,6 +36,29 @@ def load_fbx_plugin():
         print(f"[ERROR] fbxmaya plugin load failed: {e}")
         raise
 
+def open_scene(input_file):
+    """Bezpieczne otwieranie sceny z pominięciem starych pluginów i atrybutów"""
+    try:
+        cmds.file(input_file,
+                  open=True,
+                  force=True,
+                  ignoreVersion=True,
+                  prompt=False,
+                  options="v=0;",
+                  suppressReferenceEdits=True)
+        print(f"[OK] Scene opened: {input_file}")
+    except Exception as e:
+        print(f"[ERROR] Scene open failed: {e}")
+        raise
+
+def get_staging_dir():
+    """Można ustawić własny staging folder na dysku z dużą ilością miejsca"""
+    # custom_tmp = "D:/maya_fbx_staging"  # <- ustaw np. na dysku D:
+    custom_tmp = os.path.join(tempfile.gettempdir(), "fbx_staging")
+    path = os.path.join(custom_tmp, getpass.getuser())
+    ensure_dir(path)
+    return path
+
 def export_fbx(final_fbx_path: str):
     ensure_dir(os.path.dirname(final_fbx_path))
     if not cmds.ls(sl=True):
@@ -52,6 +75,7 @@ def export_fbx(final_fbx_path: str):
     cmds.FBXExportInputConnections('-v', True)
     cmds.FBXExportUseSceneName('-v', False)
 
+    # Próba bezpośredniego eksportu
     try:
         cmds.FBXExport('-f', final_fbx_path, '-s')
         print(f"[OK] FBX exported directly to: {final_fbx_path}")
@@ -59,7 +83,8 @@ def export_fbx(final_fbx_path: str):
     except Exception as e_direct:
         print(f"[WARN] Direct FBX export failed: {e_direct}")
 
-    tmp_dir = ensure_dir(os.path.join(tempfile.gettempdir(), "fbx_staging", getpass.getuser()))
+    # Staging do folderu tymczasowego
+    tmp_dir = get_staging_dir()
     tmp_fbx = os.path.join(tmp_dir, os.path.basename(final_fbx_path))
     try:
         cmds.FBXExport('-f', tmp_fbx, '-s')
@@ -89,7 +114,7 @@ def main():
     maya.standalone.initialize(name='python')
     try:
         load_fbx_plugin()
-        cmds.file(input_file, open=True, force=True)
+        open_scene(input_file)
         ok = export_fbx(final_fbx)
         sys.stdout.flush(); sys.stderr.flush()
         return 0 if ok else 1
