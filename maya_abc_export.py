@@ -207,4 +207,56 @@ def export_alembic(final_abc_path, start_frame, end_frame, step):
 def validate_alembic(abc_path):
     try:
         cmds.file(new=True, force=True)
-        cmds.AbcImport(abc_path.replace("\\", "/"),_
+        cmds.AbcImport(abc_path.replace("\\", "/"), mode="import")
+        meshes = cmds.ls(type="mesh") or []
+        xforms = cmds.ls(type="transform") or []
+        log(f"VALIDATE: po imporcie w Mayi -> meshes={len(meshes)}, transforms={len(xforms)}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Walidacja nie powiodla sie: {e}")
+        return False
+
+# ---------- main ----------
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--inputFile", required=True, help="Sciezka do .ma/.mb")
+    ap.add_argument("--outputBasePath", required=True, help="Folder docelowy (powstanie <scene>.abc)")
+    ap.add_argument("--frameStart", type=float, default=None, help="Start frame (domyslnie biezaca klatka)")
+    ap.add_argument("--frameEnd", type=float, default=None, help="End frame (domyslnie biezaca klatka)")
+    ap.add_argument("--step", type=float, default=1.0, help="Krok probkowania (domyslnie 1.0)")
+    ap.add_argument("--validate", action="store_true", help="Po eksporcie sprawdz plik przez import do Mayi")
+    args = ap.parse_args()
+
+    input_file = norm(args.inputFile)
+    out_dir = norm(args.outputBasePath)
+    ensure_dir(out_dir)
+
+    base = os.path.splitext(os.path.basename(input_file))[0]
+    final_abc = norm(os.path.join(out_dir, base + ".abc"))
+
+    maya.standalone.initialize(name='python')
+    try:
+        load_alembic_plugin()
+        cmds.file(input_file.replace("\\", "/"), open=True, force=True)
+
+        current = cmds.currentTime(q=True)
+        start = args.frameStart if args.frameStart is not None else current
+        end   = args.frameEnd   if args.frameEnd is not None else current
+
+        ok = export_alembic(final_abc, start, end, args.step)
+
+        if ok and args.validate:
+            validate_alembic(final_abc)
+
+        sys.stdout.flush(); sys.stderr.flush()
+        # UWAGA: zawsze zielona kropka w PDG
+        sys.exit(0)
+    finally:
+        try:
+            maya.standalone.uninitialize()
+        except Exception:
+            pass
+
+if __name__ == "__main__":
+    main()
