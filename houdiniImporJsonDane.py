@@ -6,18 +6,22 @@ geo  = node.geometry()
 def _norm(p):
     if not p: return ""
     p = p.replace("|", "/")
-    while "//" in p: p = p.replace("//", "/")
+    while "//" in p:
+        p = p.replace("//", "/")
     return p.rstrip("/")
 
 def _parse_matrix16(val):
     if isinstance(val, str):
-        try: val = json.loads(val)
-        except: return None
+        try:
+            val = json.loads(val)
+        except:
+            return None
     if isinstance(val, (list, tuple)) and len(val) == 16 and all(isinstance(x,(int,float)) for x in val):
         return tuple(float(x) for x in val)
     if isinstance(val, (list, tuple)) and len(val) == 4 and all(isinstance(r,(list,tuple)) and len(r)==4 for r in val):
         flat = []
-        for r in val: flat.extend(float(x) for x in r)
+        for r in val:
+            flat.extend(float(x) for x in r)
         return tuple(flat)
     return None
 
@@ -29,7 +33,8 @@ def _to_vec3(v):
             vv = json.loads(v)
             if isinstance(vv,(list,tuple)) and len(vv)==3:
                 return hou.Vector3([float(x) for x in vv])
-        except: pass
+        except:
+            pass
     return None
 
 # --- 1) Wczytaj JSON ---
@@ -47,7 +52,8 @@ rec_map = {}
 for rec in records:
     for k in ("path","transformPathUnix","shapePathUnix"):
         p = _norm(rec.get(k,""))
-        if p: rec_map[p] = rec
+        if p:
+            rec_map[p] = rec
 
 pathA  = geo.findPrimAttrib("path")
 shapeA = geo.findPrimAttrib("shape_path")
@@ -55,11 +61,14 @@ xformA = geo.findPrimAttrib("xform_path")
 
 def _rec_for(prim):
     for a in (pathA,shapeA,xformA):
-        if not a: continue
+        if not a:
+            continue
         try:
             p = _norm(prim.attribValue(a))
-            if p in rec_map: return rec_map[p]
-        except: pass
+            if p in rec_map:
+                return rec_map[p]
+        except:
+            pass
     return None
 
 # --- 3) Reset atrybutów specjalnych ---
@@ -79,11 +88,16 @@ if not geo.findPrimAttrib("bbox_min"):
 if not geo.findPrimAttrib("bbox_max"):
     geo.addAttrib(hou.attribType.Prim, "bbox_max", hou.Vector3((0,0,0)))
 
+# dodaj atrybut materiału
+if not geo.findPrimAttrib("material"):
+    geo.addAttrib(hou.attribType.Prim, "material", "")
+
 # --- 4) Główna pętla ---
 applied = 0
 for prim in geo.prims():
     rec = _rec_for(prim)
-    if not rec: continue
+    if not rec:
+        continue
 
     # worldMatrix
     wm16 = _parse_matrix16(rec.get("worldMatrix"))
@@ -110,21 +124,26 @@ for prim in geo.prims():
     bbox = rec.get("bbox") or {}
     vmin = _to_vec3(bbox.get("min"))
     vmax = _to_vec3(bbox.get("max"))
-    if vmin: prim.setAttribValue("bbox_min", vmin*0.01)
-    if vmax: prim.setAttribValue("bbox_max", vmax*0.01)
+    if vmin:
+        prim.setAttribValue("bbox_min", vmin*0.01)
+    if vmax:
+        prim.setAttribValue("bbox_max", vmax*0.01)
 
     # wybrane pola skalarne
     for k in ("vmeCommonPartType","instanced","vertices","faces"):
         if k in rec:
             val = rec[k]
             if isinstance(val, int):
-                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0)
+                if not geo.findPrimAttrib(k):
+                    geo.addAttrib(hou.attribType.Prim,k,0)
                 prim.setAttribValue(k,val)
             elif isinstance(val, float):
-                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0.0)
+                if not geo.findPrimAttrib(k):
+                    geo.addAttrib(hou.attribType.Prim,k,0.0)
                 prim.setAttribValue(k,val)
             elif isinstance(val, str):
-                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,"")
+                if not geo.findPrimAttrib(k):
+                    geo.addAttrib(hou.attribType.Prim,k,"")
                 prim.setAttribValue(k,val)
 
     # extraAttributes.*
@@ -134,19 +153,28 @@ for prim in geo.prims():
             if k == "LEGO_startPosition":
                 continue
             if isinstance(v,int):
-                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0)
+                if not geo.findPrimAttrib(k):
+                    geo.addAttrib(hou.attribType.Prim,k,0)
                 prim.setAttribValue(k,v)
             elif isinstance(v,float):
-                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,0.0)
+                if not geo.findPrimAttrib(k):
+                    geo.addAttrib(hou.attribType.Prim,k,0.0)
                 prim.setAttribValue(k,v)
             elif isinstance(v,str):
-                if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,"")
+                if not geo.findPrimAttrib(k):
+                    geo.addAttrib(hou.attribType.Prim,k,"")
                 prim.setAttribValue(k,v)
             else:
                 vec = _to_vec3(v)
                 if vec is not None:
-                    if not geo.findPrimAttrib(k): geo.addAttrib(hou.attribType.Prim,k,hou.Vector3((0,0,0)))
+                    if not geo.findPrimAttrib(k):
+                        geo.addAttrib(hou.attribType.Prim,k,hou.Vector3((0,0,0)))
                     prim.setAttribValue(k,vec)
+
+    # --- materials ---
+    mats = rec.get("materials")
+    if mats and isinstance(mats, list) and len(mats) > 0:
+        prim.setAttribValue("material", str(mats[0]))
 
     applied += 1
 
