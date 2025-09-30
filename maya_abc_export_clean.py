@@ -115,11 +115,6 @@ def unique_parent_transforms(shapes):
 # ---------- scene scanning ----------
 
 def get_top_level_roots_from_selection_or_scene():
-    """
-    Zwraca kandydatów na -root:
-    - jeśli jest selekcja: top-level rodzice dla zaznaczonych transformów (pierwszy segment po '|')
-    - jeśli brak selekcji: wszystkie assemblies poza kamerami
-    """
     sel = cmds.ls(sl=True, long=True, type="transform") or []
     if sel:
         roots = []
@@ -145,10 +140,6 @@ def get_top_level_roots_from_selection_or_scene():
     return roots
 
 def collect_export_roots():
-    """
-    1) Weź kandydatów na root i odfiltruj te, pod którymi nie ma żadnych mesh'y nie-pośrednich.
-    2) Jeśli po filtrze lista pusta → fallback: weź WSZYSTKIE mesh'e w scenie (nie-pośrednie) i ich parent transformy.
-    """
     candidates = get_top_level_roots_from_selection_or_scene()
     valid_roots = []
     total_meshes = 0
@@ -172,7 +163,7 @@ def collect_export_roots():
             pass
     parent_xforms = unique_parent_transforms(non_intermediate)
     if parent_xforms:
-        log(f"Fallback: brak mesh'y pod top-level. Używam {len(parent_xforms)} rodziców mesh'y jako -root.")
+        log(f"Fallback: brak mesh'y pod top-level. Uzywam {len(parent_xforms)} rodziców mesh'y jako -root.")
         return parent_xforms
 
     return []
@@ -273,9 +264,18 @@ def main():
     maya.standalone.initialize(name='python')
     try:
         load_alembic_plugin()
-        cmds.file(input_file.replace("\\", "/"), open=True, force=True)
 
-        # >>> cleanup przed eksportem <<<
+        # --- tu zmiana: otwieramy plik ignorując brakujące pluginy ---
+        cmds.file(
+            input_file.replace("\\", "/"),
+            open=True,
+            force=True,
+            ignoreVersion=True,
+            prompt=False,
+            ignorePlugin=True
+        )
+
+        # cleanup po otwarciu
         cleanup_scene()
 
         current = cmds.currentTime(q=True)
