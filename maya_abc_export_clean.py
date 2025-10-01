@@ -265,14 +265,13 @@ def main():
     try:
         load_alembic_plugin()
 
-        # --- tu zmiana: otwieramy plik ignorując brakujące pluginy ---
+        # --- tu zmiana: otwieramy plik bez ignorePlugin ---
         cmds.file(
             input_file.replace("\\", "/"),
             open=True,
             force=True,
             ignoreVersion=True,
-            prompt=False,
-            ignorePlugin=True
+            prompt=False
         )
 
         # cleanup po otwarciu
