@@ -27,12 +27,16 @@ def main():
         start = args.frameStart if args.frameStart is not None else current
         end   = args.frameEnd   if args.frameEnd is not None else current
 
-        job = f"-frameRange {start} {end} -uvWrite -worldSpace -writeVisibility -root |Model_grp -file {args.outputFile.replace('\\','/')}"
+        # przygotuj sciezke poprawnie (zamiana backslash na slash)
+        out_path = args.outputFile.replace("\\", "/")
+
+        # składamy job string
+        job = f"-frameRange {start} {end} -uvWrite -worldSpace -writeVisibility -root |Model_grp -file {out_path}"
         print("[ABC] Export job:", job)
 
         cmds.AbcExport(j=job)
 
-        print(f"[ABC] OK: zapisano {args.outputFile}")
+        print(f"[ABC] OK: zapisano {out_path}")
         sys.exit(0)
     finally:
         maya.standalone.uninitialize()
