@@ -11,7 +11,7 @@ import maya.cmds as cmds
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--inputFile", required=True, help="Sciezka do .ma/.mb")
-    ap.add_argument("--outputFile", required=True, help="Sciezka do pliku wynikowego .abc")
+    ap.add_argument("--outputBasePath", required=True, help="Folder docelowy (powstanie <scene>.abc)")
     ap.add_argument("--frameStart", type=float, default=None, help="Start frame (domyslnie biezaca klatka)")
     ap.add_argument("--frameEnd", type=float, default=None, help="End frame (domyslnie biezaca klatka)")
     args = ap.parse_args()
@@ -27,10 +27,11 @@ def main():
         start = args.frameStart if args.frameStart is not None else current
         end   = args.frameEnd   if args.frameEnd is not None else current
 
-        # przygotuj sciezke poprawnie (zamiana backslash na slash)
-        out_path = args.outputFile.replace("\\", "/")
+        # budujemy sciezke do .abc na podstawie inputFile + outputBasePath
+        base = os.path.splitext(os.path.basename(args.inputFile))[0]
+        out_path = os.path.join(args.outputBasePath, base + ".abc").replace("\\", "/")
 
-        # składamy job string
+        # job string (Export All)
         job = f"-frameRange {start} {end} -uvWrite -worldSpace -writeVisibility -root |Model_grp -file {out_path}"
         print("[ABC] Export job:", job)
 
