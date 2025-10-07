@@ -150,8 +150,7 @@ def build_abc_job_args(roots, start_frame, end_frame, step):
 
     # bezpieczne, szeroko wspierane flagi
     args += ["-worldSpace"]
-    if "-uvWrite" in supported:
-        args += ["-uvWrite"]
+    args += ["-uvWrite"]
     if "-writeColorSets" in supported:
         args += ["-writeColorSets"]
     if "-writeVisibility" in supported:
