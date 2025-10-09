@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Alembic-only exporter for Maya 2025 (mayapy safe)
-- output: <sceneName>.abc in --outputBasePath
-- exports all UV sets, color sets, visibility, and transforms
-- supports PDG-safe UTF-8 logging
+Alembic-only exporter for Maya 2025 (mayapy-safe, PDG-safe)
+----------------------------------------------------------
+Eksportuje:
+ - geometrię (worldSpace)
+ - wszystkie UV sety
+ - color sets
+ - visibility
+ - eulerFilter
+ - creaseWeight / creaseEdges / creaseVertices
+Zapis bezpośrednio do UNC / bez stagingu.
 """
 
-import argparse, os, sys
+import argparse, os, sys, time
 import maya.standalone
 import maya.cmds as cmds
 
@@ -20,7 +26,7 @@ def ensure_dir(p):
     return p
 
 def log(msg):
-    """Safe UTF-8 logger (PDG-friendly)."""
+    """UTF-8 safe logger for PDG."""
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         print(f"[ABC] {msg}")
@@ -40,7 +46,6 @@ def load_alembic_plugin():
         raise
 
 def list_non_intermediate_meshes_under(root):
-    """Return all non-intermediate mesh shapes under given root."""
     shapes = cmds.listRelatives(root, ad=True, type="mesh", fullPath=True) or []
     out = []
     for s in shapes:
@@ -52,7 +57,6 @@ def list_non_intermediate_meshes_under(root):
     return out
 
 def unique_parent_transforms(shapes):
-    """Return sorted list of unique parent transforms for given shapes."""
     parents = set()
     for s in shapes:
         p = cmds.listRelatives(s, parent=True, fullPath=True) or []
@@ -80,7 +84,6 @@ def get_top_level_roots_from_selection_or_scene():
     return [a for a in assemblies if a not in cam_parents]
 
 def collect_export_roots():
-    """Find all valid roots (with non-intermediate meshes)."""
     candidates = get_top_level_roots_from_selection_or_scene()
     valid_roots, total_meshes = [], 0
     for r in candidates:
@@ -93,9 +96,15 @@ def collect_export_roots():
         log(f"Kandydaci na -root po filtrze: {len(valid_roots)} szt. (mesh'y: {total_meshes})")
         return valid_roots
 
-    # Fallback → all meshes in scene
+    # fallback → all non-intermediate meshes in scene
     all_shapes = cmds.ls(type="mesh", long=True) or []
-    non_intermediate = [s for s in all_shapes if not cmds.getAttr(s + ".intermediateObject")]
+    non_intermediate = []
+    for s in all_shapes:
+        try:
+            if not cmds.getAttr(s + ".intermediateObject"):
+                non_intermediate.append(s)
+        except Exception:
+            pass
     parent_xforms = unique_parent_transforms(non_intermediate)
     if parent_xforms:
         log(f"Fallback: używam {len(parent_xforms)} rodziców mesh'y jako -root.")
@@ -107,27 +116,25 @@ def collect_export_roots():
 
 def build_abc_job_args(roots, start_frame, end_frame, step):
     """
-    Build job args for AbcExport.
-    Always exports all UV sets, color sets, visibility, rotations with eulerFilter.
+    Buduje job string dla AbcExport:
+    - zawsze eksportuje UV, color sets, visibility, creases
     """
     args = []
-    # frame range
     args += ["-frameRange", str(start_frame), str(end_frame)]
     if step and step > 0:
         args += ["-step", str(step)]
 
-    # export flags (always included)
     args += [
         "-worldSpace",
         "-uvWrite",
         "-writeUVSets",
         "-writeColorSets",
         "-writeVisibility",
+        "-writeCreases",     # <--- kluczowa flaga: creaseWeight / creaseEdges
         "-eulerFilter",
         "-dataFormat", "Ogawa"
     ]
 
-    # roots
     for r in roots:
         args += ["-root", r]
 
@@ -151,12 +158,30 @@ def export_alembic(final_abc_path, start_frame, end_frame, step):
     final_abc_path = final_abc_path.replace("\\", "/")
     job_args += ["-file", final_abc_path]
 
+    # test zapisu
+    try:
+        with open(final_abc_path, "wb") as f:
+            f.write(b"TEST")
+        os.remove(final_abc_path)
+        log("Test zapisu: OK (folder dostępny).")
+    except Exception as e:
+        log(f"[ERROR] test zapisu nieudany: {e}")
+        return False
+
     total_meshes = sum(len(list_non_intermediate_meshes_under(r)) for r in roots)
     log(f"Eksport: roots={len(roots)}, mesh'y~{total_meshes}, zakres={start_frame}->{end_frame}, step={step}")
 
     try:
         cmds.AbcExport(j=" ".join(job_args))
-        size = os.path.getsize(final_abc_path) if os.path.exists(final_abc_path) else 0
+        cmds.flushUndo()
+        cmds.file(save=True)
+        time.sleep(1)
+
+        if not os.path.exists(final_abc_path):
+            log("[ERROR] Plik Alembic NIE istnieje po eksporcie!")
+            return False
+
+        size = os.path.getsize(final_abc_path)
         log(f"OK: zapisano Alembic: {final_abc_path} (rozmiar: {size} B)")
         return True
     except Exception as e:
@@ -210,6 +235,7 @@ def main():
 
         sys.stdout.flush()
         sys.stderr.flush()
+        time.sleep(0.5)
         sys.exit(0)
     finally:
         try:
