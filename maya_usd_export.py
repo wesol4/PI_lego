@@ -58,15 +58,53 @@ def open_scene_safe(path: str):
         print(f"[WARN] Errors while opening scene: {e}")
 
 
-def export_usd_to_temp(scene_usd_name: str) -> str:
-    """Eksportuje całą scenę do pliku w %TEMP% i zwraca jego ścieżkę"""
+def detect_anim_frame_range():
+    """Zwraca (has_anim, start, end) bazując na krzywych animacji lub timeline."""
+    anim_curves = cmds.ls(type=("animCurveTA","animCurveTL","animCurveTT","animCurveTU")) or []
+    if anim_curves:
+        # prosty wariant: użyj zakresu z timeline
+        start = cmds.playbackOptions(q=True, minTime=True)
+        end   = cmds.playbackOptions(q=True, maxTime=True)
+        return True, float(start), float(end)
+    return False, 1.0, 1.0
+
+
+def export_usd_to_temp(scene_usd_name: str,
+                       skels: str = "auto",
+                       skins: str = "auto",
+                       export_blendshapes: bool = False,
+                       force_anim: bool = None,
+                       start_override: float | None = None,
+                       end_override: float | None = None) -> str:
+    """
+    Eksportuje całą scenę do pliku w %TEMP% i zwraca jego ścieżkę.
+    - skels: 'none'|'auto'|'explicit'  → exportSkels
+    - skins: 'none'|'auto'|'explicit'  → exportSkins
+    - export_blendshapes: True/False   → exportBlendShapes
+    - force_anim: True/False/None      → animation=1/0/auto (auto=wykryj)
+    - start_override / end_override    → startTime / endTime (float lub None)
+    """
     tmp_dir = ensure_dir(os.path.join(tempfile.gettempdir(), "usd_staging", getpass.getuser()))
     tmp_usd = os.path.join(tmp_dir, scene_usd_name)
 
     if not cmds.ls(sl=True):
         cmds.select(all=True)
 
+    # anim: auto-detect (chyba, że wymuszone)
+    has_anim, auto_start, auto_end = detect_anim_frame_range()
+    if force_anim is None:
+        export_anim = has_anim
+    else:
+        export_anim = bool(force_anim)
+
+    start = float(start_override if start_override is not None else (auto_start if export_anim else 1.0))
+    end   = float(end_override   if end_override   is not None else (auto_end   if export_anim else 1.0))
+
+    # Uwaga: klucze opcji pochodzą z eksportera "USD Export"
+    # (exportSkels/exportSkins/exportBlendShapes/animation/startTime/endTime itd.)
+    # Patrz: przykłady w dyskusjach Autodesk maya-usd. :contentReference[oaicite:0]{index=0}
     options = (
+        # GEO / atrybuty
         "ExportUVs=1;"
         "ExportColorSets=1;"
         "ExportDisplayColor=1;"
@@ -74,6 +112,21 @@ def export_usd_to_temp(scene_usd_name: str) -> str:
         "WorldSpace=1;"
         "DynamicAttributes=1;"
         "CurveDefaultWidth=1.0;"
+        # UsdSkel: szkielety / skiny / blend-shapes
+        f"exportSkels={skels};"
+        f"exportSkins={skins};"
+        f"exportBlendShapes={'1' if export_blendshapes else '0'};"
+        # Animacja (SkelAnimation / time-samples)
+        f"animation={'1' if export_anim else '0'};"
+        "eulerFilter=1;"
+        "staticSingleSample=0;"
+        f"startTime={start};"
+        f"endTime={end};"
+        "frameStride=1;"
+        "frameSample=0.0;"
+        # Format / drobne
+        "mergeTransformAndShape=1;"
+        # "defaultUSDFormat=usdc;"  # opcjonalnie: usda/usdc
     )
 
     cmds.file(norm_path(tmp_usd),
@@ -83,6 +136,9 @@ def export_usd_to_temp(scene_usd_name: str) -> str:
               pr=True,
               es=True)
     print(f"[OK] USD exported to TEMP: {norm_path(tmp_usd)}")
+    if export_anim:
+        print(f"[INFO] SkelAnimation ON, frames: {start}..{end}")
+    print(f"[INFO] UsdSkel: exportSkels={skels}, exportSkins={skins}, blendShapes={'ON' if export_blendshapes else 'OFF'}")
     return tmp_usd
 
 
@@ -90,6 +146,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--inputFile", required=True, help="Sciezka do .ma/.mb")
     ap.add_argument("--outputBasePath", required=True, help="Folder docelowy (powstanie <scene>.usd)")
+    # nowe, opcjonalne:
+    ap.add_argument("--skeletons", choices=["none","auto","explicit"], default="auto",
+                    help="Eksport szkieletów (exportSkels)")
+    ap.add_argument("--skins", choices=["none","auto","explicit"], default="auto",
+                    help="Eksport skinClusterów (exportSkins)")
+    ap.add_argument("--blendshapes", action="store_true", help="Eksport blend-shapes (exportBlendShapes=1)")
+    ap.add_argument("--exportAnimation", action="store_true",
+                    help="Wymuś eksport animacji (w przeciwnym razie auto-wykrywanie)")
+    ap.add_argument("--start", type=float, default=None, help="Start klatek animacji (opcjonalnie)")
+    ap.add_argument("--end", type=float, default=None, help="Koniec klatek animacji (opcjonalnie)")
     args = ap.parse_args()
 
     input_file = norm_path(args.inputFile)
@@ -105,8 +171,16 @@ def main():
         load_usd_plugin()
         open_scene_safe(input_file)
 
-        # staging do TEMP
-        tmp_usd = export_usd_to_temp(os.path.basename(final_usd))
+        # staging do TEMP (z UsdSkel + anim)
+        tmp_usd = export_usd_to_temp(
+            os.path.basename(final_usd),
+            skels=args.skeletons,
+            skins=args.skins,
+            export_blendshapes=args.blendshapes,
+            force_anim=(True if args.exportAnimation else None),
+            start_override=args.start,
+            end_override=args.end,
+        )
 
         # kopiowanie z retry
         ok, err = copy_with_retry(tmp_usd, final_usd)
